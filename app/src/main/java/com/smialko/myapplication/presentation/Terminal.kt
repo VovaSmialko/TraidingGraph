@@ -2,19 +2,27 @@ package com.smialko.myapplication.presentation
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.TransformableState
+import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.text.TextMeasurer
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.smialko.myapplication.data.Bar
 import kotlin.math.roundToInt
 
@@ -22,54 +30,81 @@ private const val MIN_VISIBLE_BARS_COUNT = 20
 
 
 @Composable
-fun Terminal(bars: List<Bar>) {
-    var visibleBarsCount by remember {
-        mutableStateOf(100)
-    }
+fun Terminal(
+    modifier: Modifier = Modifier,
+    bars: List<Bar>
+) {
 
-    var terminalWidth by remember {
-        mutableStateOf(0f)
-    }
+    var terminalState by rememberTerminalState(bars = bars)
 
-    val barWidth by remember {
-        derivedStateOf {
-            terminalWidth / visibleBarsCount
+    Chart(
+        modifier = modifier,
+        terminalState = terminalState,
+        onTerminalStateChanged = {
+            terminalState = it
         }
+    )
+
+
+
+    bars.firstOrNull()?.let {
+        Prices(
+            modifier = modifier,
+            max = terminalState.max,
+            min = terminalState.min,
+            pxPerPoint = terminalState.pxPerPoint,
+            lastPrice = it.close
+        )
     }
+}
 
-    var scrollBy by remember {
-        mutableStateOf(0f)
-    }
+@Composable
+private fun Chart(
+    modifier: Modifier = Modifier,
+    terminalState: TerminalState,
+    onTerminalStateChanged: (TerminalState) -> Unit
+) {
+    val transformableState = rememberTransformableState { zoomChange, panChange, _ ->
+        val visibleBarsCount = (terminalState.visibleBarsCount / zoomChange).roundToInt()
+            .coerceIn(MIN_VISIBLE_BARS_COUNT, terminalState.barList.size)
 
-    val visibleBars by remember {
-        derivedStateOf {
-            val startIndex = (scrollBy / barWidth).roundToInt().coerceAtLeast(0)
-            val endIndex = (startIndex + visibleBarsCount).coerceAtMost(bars.size)
-            bars.subList(startIndex, endIndex)
-        }
-    }
-
-    val transformableState = TransformableState { zoomChange, panChange, _ ->
-        visibleBarsCount = (visibleBarsCount / zoomChange).roundToInt()
-            .coerceIn(MIN_VISIBLE_BARS_COUNT, bars.size)
-
-        scrollBy = (scrollBy + panChange.x)
+        val scrollBy = (terminalState.scrollBy + panChange.x)
             .coerceAtLeast(0f)
-            .coerceAtMost(bars.size * barWidth - terminalWidth)
+            .coerceAtMost(terminalState.barList.size * terminalState.barWidth - terminalState.terminalWidth)
+
+        onTerminalStateChanged(
+            terminalState.copy(
+                visibleBarsCount = visibleBarsCount,
+                scrollBy = scrollBy
+            )
+        )
     }
+
     Canvas(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxSize()
             .background(Color.Black)
+            .clipToBounds()
+            .padding(
+                top = 32.dp,
+                bottom = 32.dp,
+                end = 32.dp
+            )
             .transformable(transformableState)
+            .onSizeChanged {
+                onTerminalStateChanged(
+                    terminalState.copy(
+                        terminalWidth = it.width.toFloat(),
+                        terminalHeight = it.height.toFloat()
+                    )
+                )
+            }
     ) {
-        terminalWidth = size.width
-        val max = visibleBars.maxOf { it.high }
-        val min = visibleBars.minOf { it.low }
-        val pxPerPoint = size.width / (max - min)
-        translate(left = scrollBy) {
-            bars.forEachIndexed { index, bar ->
-                val offsetX = size.width - index * barWidth
+        val min = terminalState.min
+        val pxPerPoint = terminalState.pxPerPoint
+        translate(left = terminalState.scrollBy) {
+            terminalState.barList.forEachIndexed { index, bar ->
+                val offsetX = size.width - index * terminalState.barWidth
                 drawLine(
                     color = Color.White,
                     start = Offset(offsetX, size.height - ((bar.low - min) * pxPerPoint)),
@@ -80,9 +115,114 @@ fun Terminal(bars: List<Bar>) {
                     color = if (bar.open < bar.close) Color.Green else Color.Red,
                     start = Offset(offsetX, size.height - ((bar.open - min) * pxPerPoint)),
                     end = Offset(offsetX, size.height - ((bar.close - min) * pxPerPoint)),
-                    strokeWidth = barWidth
+                    strokeWidth = terminalState.barWidth
                 )
             }
         }
     }
+
+}
+
+@Composable
+private fun Prices(
+    modifier: Modifier = Modifier,
+    max: Float,
+    min: Float,
+    pxPerPoint: Float,
+    lastPrice: Float
+) {
+    val textMeasurer = rememberTextMeasurer()
+    Canvas(
+        modifier = modifier
+            .fillMaxSize()
+            .clipToBounds()
+            .padding(vertical = 32.dp)
+
+    ) {
+        drawPrices(max, min, pxPerPoint, lastPrice, textMeasurer)
+    }
+}
+
+
+private fun DrawScope.drawPrices(
+    max: Float,
+    min: Float,
+    pxPerPoint: Float,
+    lastPrice: Float,
+    textMeasurer: TextMeasurer
+) {
+    //max
+
+    val maxPriceOffsetY = 0f
+    drawDashedLine(
+        start = Offset(0f, maxPriceOffsetY),
+        end = Offset(size.width, maxPriceOffsetY)
+    )
+    drawTextPrice(
+        textMeasurer = textMeasurer,
+        price = max,
+        offsetY = 0f
+    )
+
+    //last price
+    val lastPriceOffsetY = size.height - ((lastPrice - min) * pxPerPoint)
+    drawDashedLine(
+        start = Offset(0f, lastPriceOffsetY),
+        end = Offset(size.width, lastPriceOffsetY)
+    )
+    drawTextPrice(
+        textMeasurer = textMeasurer,
+        price = lastPrice,
+        offsetY = lastPriceOffsetY
+    )
+    //min
+    val minPriceOffsetY = size.height
+    drawDashedLine(
+        start = Offset(0f, minPriceOffsetY),
+        end = Offset(size.width, minPriceOffsetY)
+    )
+    drawTextPrice(
+        textMeasurer = textMeasurer,
+        price = min,
+        offsetY = minPriceOffsetY
+    )
+
+}
+
+private fun DrawScope.drawTextPrice(
+    textMeasurer: TextMeasurer,
+    price: Float,
+    offsetY: Float
+) {
+    val textLayoutResult = textMeasurer.measure(
+        text = price.toString(),
+        style = TextStyle(
+            color = Color.White,
+            fontSize = 12.sp
+        )
+    )
+    drawText(
+        textLayoutResult = textLayoutResult,
+        topLeft = Offset(size.width - textLayoutResult.size.width - 4.dp.toPx(), offsetY)
+
+    )
+}
+
+private fun DrawScope.drawDashedLine(
+    color: Color = Color.White,
+    start: Offset,
+    end: Offset,
+    strokeWidth: Float = 1f
+) {
+    drawLine(
+        color = color,
+        start = start,
+        end = end,
+        strokeWidth = strokeWidth,
+        pathEffect = PathEffect.dashPathEffect(
+            intervals = floatArrayOf(
+                4.dp.toPx(), 4.dp.toPx()
+            )
+        )
+    )
 }
